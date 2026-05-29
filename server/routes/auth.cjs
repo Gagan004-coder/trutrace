@@ -1,37 +1,23 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const { pool } = require('../db.cjs');
 require('dotenv').config();
 
 const router = express.Router();
 
-/* ─── Nodemailer SMTP transporter ─────────────────────────────────────────── */
-const createTransporter = () => {
-  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    return null; // SMTP not configured — dev fallback
-  }
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT || '587'),
-    secure: process.env.SMTP_SECURE === 'true', // true for port 465, false for 587
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
-};
-
+/* ─── Resend HTTP email client ───────────────────────────────────────────── */
 const sendResetEmail = async (toEmail, userName, otp) => {
-  const transporter = createTransporter();
-  if (!transporter) {
+  if (!process.env.RESEND_API_KEY) {
+    // Dev fallback: log OTP to console when API key not configured
     console.log(`\n📧 [DEV] Password reset OTP for ${toEmail}: ${otp}\n`);
     return { devMode: true };
   }
 
-  const fromName = process.env.SMTP_FROM_NAME || 'TruTrace Security';
-  const fromEmail = process.env.SMTP_USER;
+  const resend = new Resend(process.env.RESEND_API_KEY);
+  const fromName = process.env.EMAIL_FROM_NAME || 'TruTrace Security';
+  const fromAddress = process.env.EMAIL_FROM || 'onboarding@resend.dev';
 
   const html = `
 <!DOCTYPE html>
@@ -89,8 +75,8 @@ const sendResetEmail = async (toEmail, userName, otp) => {
 </body>
 </html>`;
 
-  await transporter.sendMail({
-    from: `"${fromName}" <${fromEmail}>`,
+  await resend.emails.send({
+    from: `${fromName} <${fromAddress}>`,
     to: toEmail,
     subject: `Your TruTrace Password Reset Code: ${otp}`,
     text: `Hello ${userName},\n\nYour TruTrace password reset code is: ${otp}\n\nThis code expires in 15 minutes.\n\nIf you did not request this, please ignore this email.\n\n— TruTrace Security`,
