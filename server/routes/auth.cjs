@@ -1,0 +1,194 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { pool } = require('../db.cjs');
+require('dotenv').config();
+
+const router = express.Router();
+
+// POST /api/auth/register
+router.post('/register', async (req, res) => {
+  try {
+    const { name, email, password, role, branch, employee_id, phone } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required' });
+    }
+    // Check duplicate
+    const [existing] = await pool.execute('SELECT id FROM users WHERE email = ?', [email]);
+    if (existing.length > 0) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+    const hashed = await bcrypt.hash(password, 12);
+    const colors = ['#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b'];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    const [result] = await pool.execute(
+      'INSERT INTO users (name, email, password, role, branch, employee_id, phone, avatar_color) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, email, hashed, role || 'underwriter', branch || '', employee_id || '', phone || '', color]
+    );
+    const token = jwt.sign(
+      { id: result.insertId, email, name, role: role || 'underwriter' },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    return res.json({
+      token,
+      user: { id: result.insertId, name, email, role: role || 'underwriter', branch, employee_id, phone, avatar_color: color }
+    });
+  } catch (err) {
+    console.error('Register error:', err);
+    return res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+// POST /api/auth/login
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
+    const [rows] = await pool.execute('SELECT * FROM users WHERE email = ?', [email]);
+    if (rows.length === 0) return res.status(401).json({ error: 'Invalid email or password' });
+
+    const user = rows[0];
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, name: user.name, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    return res.json({
+      token,
+      user: {
+        id: user.id, name: user.name, email: user.email,
+        role: user.role, branch: user.branch, employee_id: user.employee_id,
+        phone: user.phone, avatar_color: user.avatar_color, created_at: user.created_at
+      }
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// GET /api/auth/me
+const authMiddleware = require('../middleware/auth.cjs');
+router.get('/me', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT id, name, email, role, branch, employee_id, phone, avatar_color, created_at FROM users WHERE id = ?',
+      [req.user.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    return res.json(rows[0]);
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to fetch user' });
+  }
+});
+
+// PUT /api/auth/profile — update profile
+router.put('/profile', authMiddleware, async (req, res) => {
+  try {
+    const { name, branch, employee_id, phone, password } = req.body;
+    let updates = [];
+    let params = [];
+
+    if (name)        { updates.push('name = ?');        params.push(name); }
+    if (branch !== undefined) { updates.push('branch = ?'); params.push(branch); }
+    if (employee_id !== undefined) { updates.push('employee_id = ?'); params.push(employee_id); }
+    if (phone !== undefined) { updates.push('phone = ?'); params.push(phone); }
+    if (password) {
+      const hashed = await bcrypt.hash(password, 12);
+      updates.push('password = ?');
+      params.push(hashed);
+    }
+
+    if (updates.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+    params.push(req.user.id);
+    await pool.execute(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, params);
+
+    const [rows] = await pool.execute(
+      'SELECT id, name, email, role, branch, employee_id, phone, avatar_color, created_at FROM users WHERE id = ?',
+      [req.user.id]
+    );
+    return res.json({ message: 'Profile updated', user: rows[0] });
+  } catch (err) {
+    console.error('Profile update error:', err);
+    return res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+// POST /api/auth/forgot-password — returns a short-lived reset token (no email needed for prototype)
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const [rows] = await pool.execute('SELECT id, name FROM users WHERE email = ?', [email]);
+    if (rows.length === 0) {
+      // Don't reveal whether email exists
+      return res.json({ message: 'If that email is registered, a reset token has been issued.' });
+    }
+
+    // Generate a 6-digit OTP as reset token
+    const token = Math.floor(100000 + Math.random() * 900000).toString();
+    const expires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    await pool.execute(
+      'UPDATE users SET reset_token = ?, reset_expires = ? WHERE email = ?',
+      [token, expires, email]
+    );
+
+    // In a real app you'd email this; for the prototype we return it directly
+    return res.json({
+      message: 'Reset token issued.',
+      resetToken: token,   // shown in-app for prototype
+      userName: rows[0].name,
+    });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    return res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+// POST /api/auth/reset-password — validates token and sets new password
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body;
+    if (!email || !token || !newPassword) {
+      return res.status(400).json({ error: 'Email, token, and new password are required' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const [rows] = await pool.execute(
+      'SELECT id, reset_token, reset_expires FROM users WHERE email = ?',
+      [email]
+    );
+    if (rows.length === 0) return res.status(400).json({ error: 'Invalid request' });
+
+    const user = rows[0];
+    if (!user.reset_token || user.reset_token !== token) {
+      return res.status(400).json({ error: 'Invalid reset token' });
+    }
+    if (new Date() > new Date(user.reset_expires)) {
+      return res.status(400).json({ error: 'Reset token has expired. Please request a new one.' });
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 12);
+    await pool.execute(
+      'UPDATE users SET password = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?',
+      [hashed, user.id]
+    );
+
+    return res.json({ message: 'Password reset successfully. You can now log in.' });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    return res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+module.exports = router;
