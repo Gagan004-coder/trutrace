@@ -120,4 +120,90 @@ router.put('/profile', authMiddleware, async (req, res) => {
   }
 });
 
+/* ─── Admin User Management Routes ───────────────────────────────────────── */
+
+const requireAdmin = (req, res, next) => {
+  if (req.user && req.user.role === 'admin') {
+    next();
+  } else {
+    return res.status(403).json({ error: 'Access denied: Administrator privileges required' });
+  }
+};
+
+// GET /api/auth/users — list all users
+router.get('/users', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT id, name, email, role, branch, employee_id, phone, avatar_color, created_at FROM users ORDER BY name ASC'
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error('List users error:', err);
+    return res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// POST /api/auth/users — create a user as admin
+router.post('/users', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const { name, email, password, role, branch, employee_id, phone } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required' });
+    }
+    const [existing] = await pool.execute('SELECT id FROM users WHERE email = ?', [email]);
+    if (existing.length > 0) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+    const hashed = await bcrypt.hash(password, 12);
+    const colors = ['#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b'];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    const [result] = await pool.execute(
+      'INSERT INTO users (name, email, password, role, branch, employee_id, phone, avatar_color) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, email, hashed, role || 'underwriter', branch || '', employee_id || '', phone || '', color]
+    );
+    const [newUser] = await pool.execute(
+      'SELECT id, name, email, role, branch, employee_id, phone, avatar_color, created_at FROM users WHERE id = ?',
+      [result.insertId]
+    );
+    return res.status(201).json(newUser[0]);
+  } catch (err) {
+    console.error('Admin create user error:', err);
+    return res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+// PUT /api/auth/users/:id/role — update user role
+router.put('/users/:id/role', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const { role } = req.body;
+    const validRoles = ['underwriter', 'manager', 'admin', 'fraud_analyst'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+    await pool.execute('UPDATE users SET role = ? WHERE id = ?', [role, req.params.id]);
+    const [updated] = await pool.execute(
+      'SELECT id, name, email, role, branch, employee_id, phone, avatar_color, created_at FROM users WHERE id = ?',
+      [req.params.id]
+    );
+    return res.json(updated[0]);
+  } catch (err) {
+    console.error('Update user role error:', err);
+    return res.status(500).json({ error: 'Failed to update user role' });
+  }
+});
+
+// DELETE /api/auth/users/:id — delete user
+router.delete('/users/:id', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    if (parseInt(req.params.id) === req.user.id) {
+      return res.status(400).json({ error: 'Cannot delete your own admin account' });
+    }
+    await pool.execute('DELETE FROM users WHERE id = ?', [req.params.id]);
+    return res.json({ message: 'User deleted successfully', id: req.params.id });
+  } catch (err) {
+    console.error('Delete user error:', err);
+    return res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
 module.exports = router;

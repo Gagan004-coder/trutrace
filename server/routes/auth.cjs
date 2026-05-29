@@ -1,25 +1,14 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const { pool } = require('../db.cjs');
 require('dotenv').config();
 
 const router = express.Router();
 
-/* ─── Resend HTTP email client ───────────────────────────────────────────── */
-const sendResetEmail = async (toEmail, userName, otp) => {
-  if (!process.env.RESEND_API_KEY) {
-    // Dev fallback: log OTP to console when API key not configured
-    console.log(`\n📧 [DEV] Password reset OTP for ${toEmail}: ${otp}\n`);
-    return { devMode: true };
-  }
-
-  const resend = new Resend(process.env.RESEND_API_KEY);
-  const fromName = process.env.EMAIL_FROM_NAME || 'TruTrace Security';
-  const fromAddress = process.env.EMAIL_FROM || 'onboarding@resend.dev';
-
-  const html = `
+/* ─── Email body generator ──────────────────────────────────────────────── */
+const getEmailHtml = (userName, otp) => `
 <!DOCTYPE html>
 <html>
 <head>
@@ -75,13 +64,43 @@ const sendResetEmail = async (toEmail, userName, otp) => {
 </body>
 </html>`;
 
-  await resend.emails.send({
-    from: `${fromName} <${fromAddress}>`,
-    to: toEmail,
-    subject: `Your TruTrace Password Reset Code: ${otp}`,
-    text: `Hello ${userName},\n\nYour TruTrace password reset code is: ${otp}\n\nThis code expires in 15 minutes.\n\nIf you did not request this, please ignore this email.\n\n— TruTrace Security`,
-    html,
-  });
+/* ─── Email Client Sender ────────────────────────────────────────────────── */
+const sendResetEmail = async (toEmail, userName, otp) => {
+  const fromName = process.env.EMAIL_FROM_NAME || 'TruTrace Security';
+  const htmlContent = getEmailHtml(userName, otp);
+  const textContent = `Hello ${userName},\n\nYour TruTrace password reset code is: ${otp}\n\nThis code expires in 15 minutes.\n\n— TruTrace Security`;
+
+  // 1. Try NodeMailer SMTP if configured
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT) || 587,
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+
+      await transporter.sendMail({
+        from: `"${fromName}" <${process.env.EMAIL_FROM || process.env.SMTP_USER}>`,
+        to: toEmail,
+        subject: `Your TruTrace Password Reset Code: ${otp}`,
+        text: textContent,
+        html: htmlContent,
+      });
+
+      console.log(`✉️ Password reset email sent via SMTP to ${toEmail}`);
+      return { smtp: true };
+    } catch (smtpErr) {
+      console.error('SMTP send failed:', smtpErr.message);
+    }
+  }
+
+  // 2. Ultimate Fallback: Log to Server Console (Dev/Offline Mode)
+  console.log(`\n📧 [DEV] Password reset OTP for ${toEmail}: ${otp}\n`);
+  return { devMode: true };
 };
 
 /* ─── Routes ──────────────────────────────────────────────────────────────── */
@@ -269,6 +288,92 @@ router.post('/reset-password', async (req, res) => {
   } catch (err) {
     console.error('Reset password error:', err);
     return res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+/* ─── Admin User Management Routes ───────────────────────────────────────── */
+
+const requireAdmin = (req, res, next) => {
+  if (req.user && req.user.role === 'admin') {
+    next();
+  } else {
+    return res.status(403).json({ error: 'Access denied: Administrator privileges required' });
+  }
+};
+
+// GET /api/auth/users — list all users
+router.get('/users', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT id, name, email, role, branch, employee_id, phone, avatar_color, created_at FROM users ORDER BY name ASC'
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error('List users error:', err);
+    return res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// POST /api/auth/users — create a user as admin
+router.post('/users', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const { name, email, password, role, branch, employee_id, phone } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required' });
+    }
+    const [existing] = await pool.execute('SELECT id FROM users WHERE email = ?', [email]);
+    if (existing.length > 0) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+    const hashed = await bcrypt.hash(password, 12);
+    const colors = ['#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b'];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    const [result] = await pool.execute(
+      'INSERT INTO users (name, email, password, role, branch, employee_id, phone, avatar_color) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, email, hashed, role || 'underwriter', branch || '', employee_id || '', phone || '', color]
+    );
+    const [newUser] = await pool.execute(
+      'SELECT id, name, email, role, branch, employee_id, phone, avatar_color, created_at FROM users WHERE id = ?',
+      [result.insertId]
+    );
+    return res.status(201).json(newUser[0]);
+  } catch (err) {
+    console.error('Admin create user error:', err);
+    return res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+// PUT /api/auth/users/:id/role — update user role
+router.put('/users/:id/role', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const { role } = req.body;
+    const validRoles = ['underwriter', 'manager', 'admin', 'fraud_analyst'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+    await pool.execute('UPDATE users SET role = ? WHERE id = ?', [role, req.params.id]);
+    const [updated] = await pool.execute(
+      'SELECT id, name, email, role, branch, employee_id, phone, avatar_color, created_at FROM users WHERE id = ?',
+      [req.params.id]
+    );
+    return res.json(updated[0]);
+  } catch (err) {
+    console.error('Update user role error:', err);
+    return res.status(500).json({ error: 'Failed to update user role' });
+  }
+});
+
+// DELETE /api/auth/users/:id — delete user
+router.delete('/users/:id', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    if (parseInt(req.params.id) === req.user.id) {
+      return res.status(400).json({ error: 'Cannot delete your own admin account' });
+    }
+    await pool.execute('DELETE FROM users WHERE id = ?', [req.params.id]);
+    return res.json({ message: 'User deleted successfully', id: req.params.id });
+  } catch (err) {
+    console.error('Delete user error:', err);
+    return res.status(500).json({ error: 'Failed to delete user' });
   }
 });
 
