@@ -90,7 +90,7 @@ export default function AuthPage() {
     try {
       const res = await axios.post('/api/auth/reset-password', {
         email: fpEmail,
-        token: fpToken,
+        token: fpOtp,        // what the user typed from their email
         newPassword: fpPassword,
       });
       setFpSuccess(res.data.message);
