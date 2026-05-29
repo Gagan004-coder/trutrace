@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import api from '../api/client';
 
 const BRANCHES = [
   'Mumbai Central', 'Delhi Connaught Place', 'Bengaluru Koramangala',
@@ -56,13 +56,17 @@ export default function AuthPage() {
     e.preventDefault();
     setFpError(''); setFpLoading(true);
     try {
-      const res = await axios.post('/api/auth/forgot-password', { email: fpEmail });
+      const res = await api.post('/auth/forgot-password', { email: fpEmail });
       // devOtp is only present in local dev when SMTP is not configured
       if (res.data.devOtp) setFpToken(res.data.devOtp);
       setFpUserName(res.data.userName || '');
       setFpStep(2);
     } catch (err) {
-      setFpError(err.response?.data?.error || 'Something went wrong. Try again.');
+      const errorObj = err.response?.data?.error;
+      const msg = typeof errorObj === 'object' 
+        ? errorObj.message || JSON.stringify(errorObj) 
+        : errorObj || 'Something went wrong. Try again.';
+      setFpError(msg);
     } finally {
       setFpLoading(false);
     }
@@ -88,7 +92,7 @@ export default function AuthPage() {
     if (fpPassword.length < 6)   { setFpError('Password must be at least 6 characters.'); return; }
     setFpLoading(true);
     try {
-      const res = await axios.post('/api/auth/reset-password', {
+      const res = await api.post('/auth/reset-password', {
         email: fpEmail,
         token: fpOtp,        // what the user typed from their email
         newPassword: fpPassword,
@@ -96,7 +100,11 @@ export default function AuthPage() {
       setFpSuccess(res.data.message);
       setFpStep(4);
     } catch (err) {
-      setFpError(err.response?.data?.error || 'Reset failed. Try requesting a new code.');
+      const errorObj = err.response?.data?.error;
+      const msg = typeof errorObj === 'object' 
+        ? errorObj.message || JSON.stringify(errorObj) 
+        : errorObj || 'Reset failed. Try requesting a new code.';
+      setFpError(msg);
     } finally {
       setFpLoading(false);
     }
