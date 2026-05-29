@@ -24,11 +24,7 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: FRONTEND_URL
-        fromService:
-          name: trutrace-frontend
-          type: web
-          property: host
-          envVarKey: RENDER_EXTERNAL_URL
+        sync: false   # Fill in after frontend deploys: https://trutrace-frontend.onrender.com
 
   # ── Frontend (React/Vite Static Site) ──────────────────────────────────────
   - type: web
@@ -39,11 +35,7 @@ services:
     staticPublishPath: ./dist
     envVars:
       - key: VITE_API_URL
-        fromService:
-          name: trutrace-api
-          type: web
-          property: host
-          envVarKey: RENDER_EXTERNAL_URL
+        sync: false   # Fill in after backend deploys: https://trutrace-api.onrender.com
     routes:
       - type: rewrite
         source: /*
