@@ -1,16 +1,17 @@
 services:
-  # ── Backend API (Node/Express) ──────────────────────────────────────────────
+  # ── TruTrace: Full-stack (Express API + React frontend) ─────────────────────
+  # Express serves the built React app from ./dist in production.
   - type: web
-    name: trutrace-api
+    name: trutrace
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3001
+        value: 10000
       - key: TIDB_HOST
         sync: false
       - key: TIDB_PORT
@@ -23,20 +24,4 @@ services:
         value: trutrace
       - key: JWT_SECRET
         generateValue: true
-      - key: FRONTEND_URL
-        sync: false   # Fill in after frontend deploys: https://trutrace-frontend.onrender.com
 
-  # ── Frontend (React/Vite Static Site) ──────────────────────────────────────
-  - type: web
-    name: trutrace-frontend
-    runtime: static
-    plan: free
-    buildCommand: npm install && npm run build
-    staticPublishPath: ./dist
-    envVars:
-      - key: VITE_API_URL
-        sync: false   # Fill in after backend deploys: https://trutrace-api.onrender.com
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
