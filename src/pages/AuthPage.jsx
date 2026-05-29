@@ -51,20 +51,16 @@ export default function AuthPage() {
     }
   };
 
-  // ── Forgot step 1: request token ──
+  // ── Forgot step 1: request OTP (sent via email) ──
   const handleForgotRequest = async (e) => {
     e.preventDefault();
     setFpError(''); setFpLoading(true);
     try {
       const res = await axios.post('/api/auth/forgot-password', { email: fpEmail });
-      if (res.data.resetToken) {
-        setFpToken(res.data.resetToken);
-        setFpUserName(res.data.userName || '');
-        setFpStep(2);
-      } else {
-        // email not found — still show step 2 with a hint message
-        setFpError('No account found with that email address.');
-      }
+      // devOtp is only present in local dev when SMTP is not configured
+      if (res.data.devOtp) setFpToken(res.data.devOtp);
+      setFpUserName(res.data.userName || '');
+      setFpStep(2);
     } catch (err) {
       setFpError(err.response?.data?.error || 'Something went wrong. Try again.');
     } finally {
@@ -72,15 +68,16 @@ export default function AuthPage() {
     }
   };
 
-  // ── Forgot step 2: verify OTP ──
-  const handleVerifyOtp = (e) => {
+  // ── Forgot step 2: verify OTP (entered by user from email) ──
+  const handleVerifyOtp = async (e) => {
     e.preventDefault();
     setFpError('');
-    if (fpOtp.trim() === fpToken) {
-      setFpStep(3);
-    } else {
+    // In dev mode with devOtp, verify locally; in prod the server verifies during reset
+    if (fpToken && fpOtp.trim() !== fpToken) {
       setFpError('Incorrect code. Please check and try again.');
+      return;
     }
+    setFpStep(3);
   };
 
   // ── Forgot step 3: set new password ──
@@ -278,7 +275,7 @@ export default function AuthPage() {
               {fpStep === 1 && (
                 <form onSubmit={handleForgotRequest}>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 20, lineHeight: 1.6 }}>
-                    Enter your registered email address. We'll generate a reset code for you.
+                    Enter your registered email address and we'll send a 6-digit reset code to your inbox.
                   </p>
                   <InputField
                     label="Registered Email *" id="fp-email"
@@ -286,34 +283,40 @@ export default function AuthPage() {
                     placeholder="priya@canarabank.com" type="email" required
                   />
                   {fpError && <ErrorBox msg={fpError} />}
-                  <SubmitBtn id="fp-request-btn" loading={fpLoading} label="Send Reset Code →" />
+                  <SubmitBtn id="fp-request-btn" loading={fpLoading} label="📧 Send Reset Code" />
                 </form>
               )}
 
-              {/* ── Step 2: OTP ── */}
+              {/* ── Step 2: Enter OTP from email ── */}
               {fpStep === 2 && (
                 <form onSubmit={handleVerifyOtp}>
-                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 20, lineHeight: 1.6 }}>
-                    {fpUserName && <><strong style={{ color: 'var(--text-primary)' }}>{fpUserName}</strong>, your </>}
-                    reset code is ready. In a production system this would be emailed — for this prototype it's shown below.
-                  </p>
-
-                  {/* OTP display box */}
+                  {/* Email sent confirmation */}
                   <div style={{
-                    background: 'linear-gradient(135deg, rgba(59,130,246,0.12), rgba(99,102,241,0.12))',
-                    border: '1px solid rgba(99,102,241,0.35)',
+                    background: 'linear-gradient(135deg, rgba(16,185,129,0.1), rgba(5,150,105,0.1))',
+                    border: '1px solid rgba(16,185,129,0.3)',
                     borderRadius: 12, padding: '16px', marginBottom: 20, textAlign: 'center',
                   }}>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 6, letterSpacing: 1 }}>YOUR RESET CODE</div>
-                    <div style={{
-                      fontFamily: 'Space Grotesk', fontSize: '2.2rem', fontWeight: 900,
-                      letterSpacing: '0.3em', color: 'var(--accent-blue)',
-                    }}>{fpToken}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6 }}>⏱ Expires in 15 minutes</div>
+                    <div style={{ fontSize: '1.8rem', marginBottom: 6 }}>📧</div>
+                    <div style={{ fontWeight: 700, color: '#6ee7b7', fontSize: '0.9rem', marginBottom: 4 }}>Code sent to your email!</div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                      Check <strong style={{ color: 'var(--text-secondary)' }}>{fpEmail}</strong> for a 6-digit code.
+                      It expires in 15 minutes.
+                    </div>
                   </div>
 
+                  {/* Dev-only fallback when SMTP is not configured */}
+                  {fpToken && (
+                    <div style={{
+                      background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
+                      borderRadius: 9, padding: '10px 14px', marginBottom: 16,
+                      fontSize: '0.8rem', color: '#fcd34d',
+                    }}>
+                      ⚙️ <strong>Dev mode</strong> — SMTP not configured. Your code: <strong style={{ letterSpacing: '0.2em', fontFamily: 'monospace' }}>{fpToken}</strong>
+                    </div>
+                  )}
+
                   <InputField
-                    label="Enter the 6-digit code *" id="fp-otp"
+                    label="6-digit reset code *" id="fp-otp"
                     value={fpOtp} onChange={setFpOtp}
                     placeholder="e.g. 482910" required
                   />
@@ -321,9 +324,9 @@ export default function AuthPage() {
                   <SubmitBtn id="fp-verify-btn" loading={false} label="Verify Code →" />
 
                   <div style={{ textAlign: 'center', marginTop: 12 }}>
-                    <button type="button" onClick={() => { setFpStep(1); setFpError(''); }}
+                    <button type="button" onClick={() => { setFpStep(1); setFpError(''); setFpToken(''); setFpOtp(''); }}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                      ↺ Request a new code
+                      ↺ Resend to a different email
                     </button>
                   </div>
                 </form>
